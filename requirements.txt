@@ -1,0 +1,20 @@
+# LLM Synthetic Reasoning Chain Generator Dependencies
+
+# Core dependencies
+requests>=2.25.0
+
+# For Argo interface (optional)
+smolagents>=0.3.0
+
+# Python standard library modules used:
+# - typing (type hints)
+# - dataclasses (data structures) 
+# - json (JSON processing)
+# - re (regular expressions)
+# - pathlib (file paths)
+# - datetime (timestamps)
+# - argparse (CLI)
+
+# Development dependencies (optional)
+# pytest>=7.0.0
+# pytest-cov>=4.0.0
