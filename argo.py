@@ -10,8 +10,12 @@ ARGO_USER = None
 
 ARGO_MODELS = {
     'gpt4o': 'GPT-4o via Argo',
+    'gpt4olatest': 'GPT-4o Latest via Argo',
+    'gpto4mini': 'GPT-o4 Mini via Argo',
+    'gpt41': 'GPT-4.1 via Argo',
     'claudeopus4': 'Claude Opus 4 via Argo', 
     'claudesonnet4': 'Claude Sonnet 4 via Argo',
+    'claudesonnet37': 'Claude Sonnet 3.7 via Argo',
     'gemini25flash': 'Gemini 2.5 Flash via Argo',
     'gpt35': 'GPT-3.5 via Argo',
     'gpt35large': 'GPT-3.5 Large via Argo', 
