@@ -28,10 +28,25 @@ import asyncio
 import random
 import argparse
 import json
+import re
+import time
+import logging
 from pathlib import Path
 from typing import List, Dict, Any
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
+
+# MPI support
+try:
+    from mpi4py import MPI
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+    MPI_AVAILABLE = True
+except ImportError:
+    rank = 0
+    size = 1
+    MPI_AVAILABLE = False
 
 try:
     from .llm_interface import UnifiedLLMClient
@@ -97,45 +112,54 @@ class ReasoningTraceGenerator:
             'clarification', 'critical', 'interpretation', 
             'comparison', 'application', 'mechanism', 'limitation'
         ]
-        self.authenticity_markers = [
-            "hmm", "wait", "actually", "let me think", "I wonder",
-            "but", "maybe", "oh", "interesting", "that's weird",
-            "I'm not sure", "hang on", "let me reconsider"
+        self.logical_rigor_markers = [
+            "therefore", "however", "given that", "this leads to", "consequently",
+            "alternatively", "nevertheless", "furthermore", "specifically", "precisely",
+            "in contrast", "as a result", "checking this against", "verifying that"
         ]
         
     async def generate_reasoning_trace(self, passage: ScientificPassage) -> Dict[str, Any]:
         """Generate a complete question-response reasoning trace from a scientific paper."""
         
+        start_time = time.time()
+        print(f"  🚀 Starting trace generation for: {passage.source_title[:50]}...")
+        
         # Stage 0: Generate realistic user questions
-        user_questions = await self._generate_user_questions(paper)
+        stage_start = time.time()
+        user_questions = await self._generate_user_questions(passage)
         selected_question = self._select_question_for_reasoning(user_questions, passage)
+        print(f"     Question generation: {time.time() - stage_start:.1f}s")
         
-        # Stage 1: Analyze question context and requirements
-        question_context = await self._analyze_question_context(selected_question, passage)
-        
-        # Stage 2: Generate question-specific reasoning fragments
+        # Stage 1: Generate question-specific reasoning fragments (3 parallel calls)
+        stage_start = time.time()
         fragments = await asyncio.gather(
             self._generate_targeted_hypotheses(selected_question, passage),
-            self._evaluate_evidence_for_question(selected_question, passage),
-            self._evaluate_methods_for_question(selected_question, passage),
+            self._evaluate_evidence_and_methods_combined(selected_question, passage),  # Combined call
             self._consider_user_perspective(selected_question, passage)
         )
+        print(f"     Fragment generation: {time.time() - stage_start:.1f}s")
         
-        # Stage 3: Assemble into question-responsive trace
-        raw_trace = await self._assemble_question_response_chain(
-            selected_question, question_context, fragments, paper
+        # Stage 2: Analyze context and assemble trace (1 combined call)
+        stage_start = time.time()
+        raw_trace = await self._analyze_context_and_assemble_trace(
+            selected_question, fragments, passage
         )
+        print(f"     Context & assembly: {time.time() - stage_start:.1f}s")
         
-        # Stage 4: Enhance authenticity and inject realistic errors
-        enhanced_trace = await self._enhance_authenticity(raw_trace)
-        final_trace = await self._inject_realistic_reasoning_patterns(enhanced_trace)
+        # Stage 3: Comprehensive enhancement (1 combined call)
+        stage_start = time.time()
+        final_trace = await self._enhance_structure_and_inject_corrections(raw_trace)
+        print(f"     Enhancement: {time.time() - stage_start:.1f}s")
         
         # Extract final answer from reasoning trace
+        stage_start = time.time()
         final_answer = await self._extract_final_answer(final_trace, selected_question)
+        print(f"     Answer extraction: {time.time() - stage_start:.1f}s")
         
         # Grade the final answer for RL training (if enabled)
         answer_grades = None
         if self.grade_answers:
+            stage_start = time.time()
             print(f"  Grading final answer...")
             answer_grades = await self._grade_final_answer(
                 selected_question, 
@@ -143,8 +167,12 @@ class ReasoningTraceGenerator:
                 passage.content + " " + passage.content, 
                 final_trace
             )
+            print(f"     Answer grading: {time.time() - stage_start:.1f}s")
         
-        return await self.generate_reasoning_trace_for_question(paper, selected_question)
+        total_generation_time = time.time() - start_time
+        print(f"  📊 Total generation time: {total_generation_time:.1f}s")
+        
+        return await self.generate_reasoning_trace_for_question(passage, selected_question)
     
     async def generate_reasoning_trace_for_question(
         self, 
@@ -153,32 +181,40 @@ class ReasoningTraceGenerator:
     ) -> Dict[str, Any]:
         """Generate a reasoning trace for a specific question using natural randomness."""
         
-        # Stage 1: Analyze question context and requirements
-        question_context = await self._analyze_question_context(question, passage)
+        trace_start_time = time.time()
         
-        # Stage 2: Generate question-specific reasoning fragments (natural variation at ~0.7 temp)
+        # Stage 1: Generate question-specific reasoning fragments (3 parallel calls)
+        stage_start = time.time()
         fragments = await asyncio.gather(
             self._generate_targeted_hypotheses(question, passage),
-            self._evaluate_evidence_for_question(question, passage),
-            self._evaluate_methods_for_question(question, passage),
+            self._evaluate_evidence_and_methods_combined(question, passage),  # Combined call
             self._consider_user_perspective(question, passage)
         )
+        fragment_time = time.time() - stage_start
         
-        # Stage 3: Assemble into question-responsive trace
-        raw_trace = await self._assemble_question_response_chain(
-            question, question_context, fragments, passage
+        # Stage 2: Analyze context and assemble trace (1 combined call)
+        stage_start = time.time()
+        raw_trace = await self._analyze_context_and_assemble_trace(
+            question, fragments, passage
         )
+        assembly_time = time.time() - stage_start
         
-        # Stage 4: Enhance authenticity and inject realistic errors
-        enhanced_trace = await self._enhance_authenticity(raw_trace)
-        final_trace = await self._inject_realistic_reasoning_patterns(enhanced_trace)
+        # Stage 3: Comprehensive enhancement (1 combined call)
+        stage_start = time.time()
+        # final_trace = await self._enhance_structure_and_inject_corrections(raw_trace)
+        final_trace = raw_trace
+        enhancement_time = time.time() - stage_start
         
         # Extract final answer from reasoning trace
+        stage_start = time.time()
         final_answer = await self._extract_final_answer(final_trace, question)
+        extraction_time = time.time() - stage_start
         
         # Grade the final answer for RL training (if enabled)
         answer_grades = None
+        grading_time = 0.0
         if self.grade_answers:
+            stage_start = time.time()
             print(f"  Grading final answer...")
             answer_grades = await self._grade_final_answer(
                 question, 
@@ -186,6 +222,11 @@ class ReasoningTraceGenerator:
                 passage.content + " " + passage.content, 
                 final_trace
             )
+            grading_time = time.time() - stage_start
+        
+        total_time = time.time() - trace_start_time
+        
+        print(f"  ✅ Total trace time: {total_time:.1f}s (fragments: {fragment_time:.1f}s, assembly: {assembly_time:.1f}s, enhancement: {enhancement_time:.1f}s, extraction: {extraction_time:.1f}s{f', grading: {grading_time:.1f}s' if grading_time > 0 else ''})")
         
         return {
             'source_paper': {
@@ -201,10 +242,18 @@ class ReasoningTraceGenerator:
             'final_answer': final_answer,
             'answer_grades': answer_grades,
             'metadata': {
-                'authenticity_score': self._calculate_authenticity_score(final_trace),
+                'logical_rigor_score': self._calculate_logical_rigor_score(final_trace),
                 'complexity_level': self._assess_complexity(final_trace),
                 'reasoning_patterns': self._identify_patterns(final_trace),
-                'question_responsiveness': self._assess_question_responsiveness(final_trace, question)
+                'question_responsiveness': self._assess_question_responsiveness(final_trace, question),
+                'timing': {
+                    'total_time': round(total_time, 2),
+                    'fragment_generation_time': round(fragment_time, 2),
+                    'context_assembly_time': round(assembly_time, 2),
+                    'enhancement_time': round(enhancement_time, 2),
+                    'answer_extraction_time': round(extraction_time, 2),
+                    'grading_time': round(grading_time, 2) if grading_time > 0 else None
+                }
             }
         }
     
@@ -218,7 +267,7 @@ Methods: {passage.content}
 Key Results: {passage.content}
 
 Generate 6-8 questions across these categories:
-CLARIFICATION (beginner): Basic understanding questions about concepts or methods
+CLARIFICATION (expert): Understanding questions about nuances in concepts or methods
 CRITICAL (intermediate): Questions challenging methodology, conclusions, or assumptions  
 INTERPRETATION (intermediate): Questions about meaning, implications, or significance
 COMPARISON (advanced): Questions relating this to other research or broader context
@@ -229,12 +278,12 @@ LIMITATION (advanced): Questions about weaknesses, constraints, or scope
 IMPORTANT: Make each question SELF-CONTAINED by:
 - Including sufficient context within the question itself
 - Defining key terms or concepts mentioned
-- Not relying on phrases like "this paper", "the authors", "these results"
+- Not relying on phrases like "this paper", "the authors", "these results", "the thesis", "the model", etc.
 - Providing enough background so the question makes sense independently
 
 Make each question:
 - Natural and conversational (how real people actually ask)
-- Specific to this paper's actual content but self-explanatory
+- Specific to this paper's actual content but self-contained without the source text
 - Appropriate for the indicated user level
 - Something that would genuinely help understanding
 - Complete with necessary context embedded in the question
@@ -297,7 +346,7 @@ Show your working through of how to best respond to their specific question.
             content=response,
             type='targeted_hypothesis',
             confidence=self._estimate_confidence(response),
-            uncertainty_markers=self._find_uncertainty_markers(response)
+            uncertainty_markers=self._find_logical_markers(response)
         )
     
     async def _evaluate_evidence_for_question(self, question: UserQuestion, passage: ScientificPassage) -> ReasoningFragment:
@@ -316,6 +365,7 @@ Think through:
 - What would help them understand the strength of the evidence?
 
 Show your reasoning as you work through evaluating the evidence through the lens of their question.
+Maintain a natural language structure, as if you are an expert working through this thought process.
 """
         
         response = await self.llm.generate(prompt, temperature=0.8)
@@ -323,7 +373,7 @@ Show your reasoning as you work through evaluating the evidence through the lens
             content=response,
             type='question_focused_evidence',
             confidence=self._estimate_confidence(response),
-            uncertainty_markers=self._find_uncertainty_markers(response)
+            uncertainty_markers=self._find_logical_markers(response)
         )
     
     async def _evaluate_methods_for_question(self, question: UserQuestion, passage: ScientificPassage) -> ReasoningFragment:
@@ -341,6 +391,7 @@ Think about:
 - Are there methodological limitations that affect the response?
 
 Express your reasoning as you evaluate how the methodology relates to their specific concern.
+Maintain a natural language structure, as if you are an expert working through this thought process.
 """
         
         response = await self.llm.generate(prompt, temperature=0.8)
@@ -348,7 +399,7 @@ Express your reasoning as you evaluate how the methodology relates to their spec
             content=response,
             type='question_focused_methods',
             confidence=self._estimate_confidence(response),
-            uncertainty_markers=self._find_uncertainty_markers(response)
+            uncertainty_markers=self._find_logical_markers(response)
         )
     
     async def _consider_user_perspective(self, question: UserQuestion, passage: ScientificPassage) -> ReasoningFragment:
@@ -368,6 +419,7 @@ Consider:
 - What follow-up questions might arise?
 
 Show your thinking about how to craft a response that truly serves this user's needs.
+Maintain a natural language structure, as if you are an expert working through this thought process.
 """
         
         response = await self.llm.generate(prompt, temperature=0.8)
@@ -375,8 +427,118 @@ Show your thinking about how to craft a response that truly serves this user's n
             content=response,
             type='user_perspective',
             confidence=self._estimate_confidence(response),
-            uncertainty_markers=self._find_uncertainty_markers(response)
+            uncertainty_markers=self._find_logical_markers(response)
         )
+    
+    async def _evaluate_evidence_and_methods_combined(self, question: UserQuestion, passage: ScientificPassage) -> ReasoningFragment:
+        """Combined evidence and methodological evaluation to maintain quality while reducing calls"""
+        prompt = f"""
+Evaluate both the evidence and methodology from the perspective of this user's specific question:
+
+User Question: {question.question}
+Paper Results: {passage.content}
+Methods: {passage.content}
+
+Think through both dimensions systematically:
+
+EVIDENCE EVALUATION:
+- Does the evidence actually address what they're asking about?
+- How strong is the evidence for answering their specific question?
+- What limitations or caveats are relevant to their inquiry?
+- Are there alternative interpretations they should consider?
+
+METHODOLOGICAL ANALYSIS:
+- Are the methods appropriate for what the user is asking about?
+- What methodological details matter for their specific question?
+- How do methodological choices affect the answer to their question?
+- Are there methodological limitations that affect the response?
+
+INTEGRATED ASSESSMENT:
+- How do the methodological strengths/weaknesses affect evidence interpretation?
+- What would help them understand both the strength of evidence AND the reliability of methods?
+- Are there interactions between methodology and evidence quality that matter for this question?
+
+Show your reasoning as you work through evaluating both evidence and methods through the lens of their question.
+Maintain a natural language structure, as if you are an expert working through this thought process.
+"""
+        
+        response = await self.llm.generate(prompt, temperature=0.8)
+        return ReasoningFragment(
+            content=response,
+            type='evidence_and_methods_combined',
+            confidence=self._estimate_confidence(response),
+            uncertainty_markers=self._find_logical_markers(response)
+        )
+    
+    async def _analyze_context_and_assemble_trace(self, question: UserQuestion, fragments: List[ReasoningFragment], passage: ScientificPassage) -> str:
+        """Combined context analysis and trace assembly to maintain quality while reducing calls"""
+        prompt = f"""
+Analyze the question requirements and create a systematic reasoning trace that methodically addresses this question.
+
+User Question: {question.question}
+Question Type: {question.question_type}
+User Level: {question.difficulty_level}
+
+Available reasoning components:
+1. Targeted hypotheses: {fragments[0].content}
+2. Evidence & methods analysis: {fragments[1].content}
+3. User perspective: {fragments[2].content}
+
+CONTEXT ANALYSIS - First determine:
+- Which specific parts of the paper are most relevant to this question
+- What types of reasoning are needed (methodological, statistical, conceptual, etc.)
+- What potential misconceptions or confusions the user might have
+- What background knowledge might be missing for this user level
+- What level of technical detail is appropriate
+
+TRACE ASSEMBLY - Then create a structured <thought>...</thought> section that demonstrates:
+- Clear problem decomposition and analysis informed by the context requirements
+- Systematic integration of the reasoning components above
+- Logical connections between concepts and data
+- Critical assessment incorporating both evidence and methodological considerations
+- Identification and correction of initial assumptions when warranted
+- Step-by-step reasoning toward conclusions appropriate for the user level
+- Appropriate acknowledgment of uncertainty when evidence is limited
+- Coherent synthesis addressing the user's specific needs and potential misconceptions
+
+Weave the reasoning components naturally into a flowing expert thought process while addressing the contextual requirements.
+Maintain a natural language structure, as if you are an expert working through this thought process.
+"""
+        
+        return await self.llm.generate(prompt, temperature=0.7)
+    
+    async def _enhance_structure_and_inject_corrections(self, trace: str) -> str:
+        """Combined logical enhancement and correction injection to maintain quality while reducing calls"""
+        prompt = f"""
+Enhance this reasoning trace by improving logical flow and adding natural self-correction moments simultaneously.
+
+Current trace: {trace}
+
+DUAL IMPROVEMENT APPROACH:
+
+1. LOGICAL FLOW ENHANCEMENT - Naturally weave in:
+   - Clearer logical transitions ("Given that...", "This leads me to think...", "Therefore...")
+   - More explicit reasoning steps woven naturally into the flow
+   - Natural error checking moments ("Let me double-check this...", "Wait, let me verify...")
+   - Organic uncertainty expression ("The evidence seems to support...", "I'm less certain about...")
+   - Smoother cause-and-effect relationships
+   - Natural evaluation of alternatives ("But I should also consider...", "Another possibility is...")
+
+2. SELF-CORRECTION INTEGRATION - Naturally incorporate moments like:
+   - Catching contradictions: "Wait, this contradicts what I said earlier about..."
+   - Correcting generalizations: "Actually, let me be more precise - this only applies when..."
+   - Recognizing weak evidence: "Hmm, the data doesn't really support such a broad claim..."
+   - Refining claims: "Let me be more careful here - the evidence suggests..."
+   - Checking assumptions: "I should double-check whether this assumption holds..."
+   - Considering alternatives: "But I should also consider that this could mean..."
+   - Catching oversights: "Oh, I need to account for the potential bias here..."
+
+**CRITICAL**: Keep the conversational, flowing style of expert thinking. Do NOT add structured headings, bullet points, or artificial phrases. Make these feel like authentic moments of expert self-reflection woven seamlessly into improved logical flow. Maintain the stream-of-consciousness feel while making both the logic clearer and the self-correction more apparent.
+
+Return only the enhanced trace with natural expert language.
+"""
+        
+        return await self.llm.generate(prompt, temperature=0.65)
     
     async def _assemble_question_response_chain(
         self, 
@@ -387,28 +549,30 @@ Show your thinking about how to craft a response that truly serves this user's n
     ) -> str:
         
         prompt = f"""
-Create a natural reasoning trace that works through how to respond to this user's question. Show the thinking process of someone carefully considering how to give a thoughtful, accurate answer.
+Create a systematic reasoning trace that methodically analyzes this question. Focus on logical progression, evidence evaluation, and structured problem-solving.
 
 User Question: {question.question}
 Question Analysis: {context.reasoning_requirements}
 User Level: {question.difficulty_level}
 
-Reasoning to incorporate:
+Reasoning components to integrate:
 1. Approach considerations: {fragments[0].content}
 2. Evidence evaluation: {fragments[1].content}
 3. Methods considerations: {fragments[2].content}
 4. User perspective: {fragments[3].content}
 
-Create a flowing <thought>...</thought> section that:
-- Starts by really understanding what the user is asking
-- Works through the relevant aspects of the paper
-- Considers how to frame the response appropriately
-- Shows reasoning about evidence, methods, and interpretation
-- Addresses potential user confusion or misconceptions
-- Builds toward a clear, helpful response
-- Acknowledges limitations or uncertainties where appropriate
+Create a structured <thought>...</thought> section that demonstrates:
+- Clear problem decomposition and analysis
+- Systematic evaluation of available evidence
+- Logical connections between concepts and data
+- Critical assessment of methodological strengths/limitations
+- Identification and correction of initial assumptions when warranted
+- Step-by-step reasoning toward conclusions
+- Appropriate acknowledgment of uncertainty when evidence is limited
+- Coherent synthesis of information to address the question
 
-Make it feel like someone genuinely thinking through how to give this user the most helpful and accurate response to their specific question.
+Emphasize logical rigor, self-correction when errors are detected, and transparent reasoning processes over conversational elements.
+Maintain a natural language structure, as if you are an expert working through this thought process.
 """
         
         return await self.llm.generate(prompt, temperature=0.7)
@@ -416,7 +580,9 @@ Make it feel like someone genuinely thinking through how to give this user the m
     def _select_question_for_reasoning(self, questions: List[UserQuestion], passage: ScientificPassage) -> UserQuestion:
         """Select the most interesting question for generating reasoning trace."""
         print(f"  Generated {len(questions)} questions")
-        
+        # try to filter out questions referencing the text
+        disqualifiers = ['the paper', 'the authors', 'the thesis', 'the project']
+        questions = [q for q in questions if not any(disqualifier in q.question.lower() for disqualifier in disqualifiers)]
         if not questions:
             # Fallback: create a default question if none were generated
             print("  No questions generated, creating fallback question")
@@ -516,7 +682,7 @@ Think aloud naturally, with pauses, corrections, and genuine uncertainty.
             content=response,
             type='evidence_eval',
             confidence=self._estimate_confidence(response),
-            uncertainty_markers=self._find_uncertainty_markers(response)
+            uncertainty_markers=self._find_logical_markers(response)
         )
     
     async def _critique_methodology(self, passage: ScientificPassage) -> ReasoningFragment:
@@ -547,7 +713,7 @@ Express this as natural internal thought, not a formal critique.
             content=response,
             type='method_critique',
             confidence=self._estimate_confidence(response),
-            uncertainty_markers=self._find_uncertainty_markers(response)
+            uncertainty_markers=self._find_logical_markers(response)
         )
     
     async def _explore_connections(self, passage: ScientificPassage) -> ReasoningFragment:
@@ -577,7 +743,7 @@ Include the messiness of real thinking - false starts, uncertainty, partial conn
             content=response,
             type='connections',
             confidence=self._estimate_confidence(response),
-            uncertainty_markers=self._find_uncertainty_markers(response)
+            uncertainty_markers=self._find_logical_markers(response)
         )
     
     async def _assemble_reasoning_chain(
@@ -641,33 +807,10 @@ Provide just the final answer - no preamble like "Based on the reasoning above" 
         return response.strip()
     
     async def _grade_final_answer(self, question: UserQuestion, final_answer: str, source_text: str, reasoning_trace: str) -> Dict[str, float]:
-        """Grade the final answer across multiple dimensions for RL training"""
-        
-        # Grade each dimension
-        grades = await asyncio.gather(
-            self._grade_question_alignment(question, final_answer),
-            self._grade_scientific_accuracy(final_answer, source_text),
-            self._grade_completeness(question, final_answer),
-            self._grade_uncertainty_calibration(final_answer, reasoning_trace),
-            self._grade_clarity_structure(final_answer),
-            self._grade_evidence_usage(final_answer, source_text)
-        )
-        
-        return {
-            'question_alignment': grades[0],
-            'scientific_accuracy': grades[1], 
-            'completeness': grades[2],
-            'uncertainty_calibration': grades[3],
-            'clarity_structure': grades[4],
-            'evidence_usage': grades[5],
-            'overall_score': sum(grades) / len(grades)
-        }
-    
-    async def _grade_question_alignment(self, question: UserQuestion, final_answer: str) -> float:
-        """Grade how well the answer addresses the specific question asked"""
+        """Grade the final answer across multiple dimensions for RL training - consolidated into single call"""
         
         prompt = f"""
-Rate how well this answer addresses the specific question asked (scale 0.0-1.0):
+Evaluate this answer across 6 dimensions and provide scores (scale 0.0-1.0) for each:
 
 QUESTION: {question.question}
 QUESTION TYPE: {question.question_type}
@@ -675,180 +818,144 @@ DIFFICULTY LEVEL: {question.difficulty_level}
 
 ANSWER: {final_answer}
 
-Evaluation criteria:
-- Does the answer directly address what was asked?
-- Are all parts of multi-part questions covered?
-- Is the response appropriate for the question type and difficulty level?
-- Does it stay focused on the question rather than going off-topic?
-
-Provide only a numerical score (0.0-1.0):
-"""
-        
-        response = await self.llm.generate(prompt, temperature=0.3)
-        try:
-            return float(response.strip())
-        except:
-            return 0.5  # Default if parsing fails
-    
-    async def _grade_scientific_accuracy(self, final_answer: str, source_text: str) -> float:
-        """Grade factual accuracy and scientific correctness"""
-        
-        prompt = f"""
-Rate the scientific accuracy of this answer based on the source material (scale 0.0-1.0):
-
 SOURCE TEXT: {source_text[:1000]}...
-
-ANSWER: {final_answer}
-
-Evaluation criteria:
-- Are scientific facts stated correctly?
-- Are there any clear factual errors?
-- Does the answer contradict established scientific knowledge?
-- Are technical terms used appropriately?
-- Is the answer consistent with the source material?
-
-Provide only a numerical score (0.0-1.0):
-"""
-        
-        response = await self.llm.generate(prompt, temperature=0.3)
-        try:
-            return float(response.strip())
-        except:
-            return 0.5
-    
-    async def _grade_completeness(self, question: UserQuestion, final_answer: str) -> float:
-        """Grade whether the answer thoroughly addresses the question"""
-        
-        prompt = f"""
-Rate how complete and thorough this answer is (scale 0.0-1.0):
-
-QUESTION: {question.question}
-
-ANSWER: {final_answer}
-
-Evaluation criteria:
-- Does the answer cover all aspects of the question?
-- Are important points missing?
-- Is the depth appropriate for the question complexity?
-- For multi-part questions, are all parts addressed?
-
-Provide only a numerical score (0.0-1.0):
-"""
-        
-        response = await self.llm.generate(prompt, temperature=0.3)
-        try:
-            return float(response.strip())
-        except:
-            return 0.5
-    
-    async def _grade_uncertainty_calibration(self, final_answer: str, reasoning_trace: str) -> float:
-        """Grade appropriate expression of confidence and uncertainty"""
-        
-        prompt = f"""
-Rate how well this answer expresses appropriate uncertainty and confidence (scale 0.0-1.0):
 
 REASONING TRACE (for context): {reasoning_trace[:500]}...
 
-FINAL ANSWER: {final_answer}
+Rate the answer on these 6 dimensions (0.0-1.0 scale):
 
-Evaluation criteria:
-- Does the answer appropriately express uncertainty about uncertain claims?
-- Does it avoid overconfident statements about speculative topics?
-- Does it appropriately express confidence about well-established facts?
-- Is the level of certainty consistent with the reasoning shown?
+1. QUESTION_ALIGNMENT: How well does the answer directly address the specific question asked?
+   - Does it address what was asked?
+   - Are all parts of multi-part questions covered?
+   - Is response appropriate for question type/difficulty?
+   - Does it stay focused rather than going off-topic?
 
-Provide only a numerical score (0.0-1.0):
+2. SCIENTIFIC_ACCURACY: How factually accurate and scientifically correct is the answer?
+   - Are scientific facts stated correctly?
+   - Are there clear factual errors?
+   - Does it contradict established scientific knowledge?
+   - Are technical terms used appropriately?
+   - Is it consistent with source material?
+
+3. COMPLETENESS: How thoroughly does the answer address the question?
+   - Does it cover all aspects of the question?
+   - Are important points missing?
+   - Is depth appropriate for question complexity?
+   - For multi-part questions, are all parts addressed?
+
+4. UNCERTAINTY_CALIBRATION: How well does it express appropriate uncertainty/confidence?
+   - Does it express uncertainty about uncertain claims?
+   - Does it avoid overconfidence about speculative topics?
+   - Does it express confidence about well-established facts?
+   - Is certainty level consistent with reasoning shown?
+
+5. CLARITY_STRUCTURE: How clear, organized, and readable is the answer?
+   - Is it well-organized and logical?
+   - Is language clear and appropriate?
+   - Are ideas in logical order?
+   - Is it easy to follow and understand?
+   - Are key points emphasized effectively?
+
+6. EVIDENCE_USAGE: How effectively does it use evidence from source material?
+   - Does it draw appropriately from source material?
+   - Are claims supported by evidence where appropriate?
+   - Does it avoid unsupported claims?
+   - Is relationship between evidence and conclusions clear?
+
+Provide your scores in this exact format:
+QUESTION_ALIGNMENT: X.X
+SCIENTIFIC_ACCURACY: X.X
+COMPLETENESS: X.X
+UNCERTAINTY_CALIBRATION: X.X
+CLARITY_STRUCTURE: X.X
+EVIDENCE_USAGE: X.X
 """
         
         response = await self.llm.generate(prompt, temperature=0.3)
-        try:
-            return float(response.strip())
-        except:
-            return 0.5
+        return self._parse_consolidated_grades(response)
     
-    async def _grade_clarity_structure(self, final_answer: str) -> float:
-        """Grade clarity, organization, and readability"""
+    def _parse_consolidated_grades(self, response: str) -> Dict[str, float]:
+        """Parse the consolidated grading response into individual scores"""
+        grades = {
+            'question_alignment': 0.5,
+            'scientific_accuracy': 0.5,
+            'completeness': 0.5,
+            'uncertainty_calibration': 0.5,
+            'clarity_structure': 0.5,
+            'evidence_usage': 0.5
+        }
         
-        prompt = f"""
-Rate the clarity and structure of this answer (scale 0.0-1.0):
-
-ANSWER: {final_answer}
-
-Evaluation criteria:
-- Is the answer well-organized and logical?
-- Is the language clear and appropriate?
-- Are ideas presented in a logical order?
-- Is it easy to follow and understand?
-- Are key points emphasized effectively?
-
-Provide only a numerical score (0.0-1.0):
-"""
-        
-        response = await self.llm.generate(prompt, temperature=0.3)
         try:
-            return float(response.strip())
-        except:
-            return 0.5
-    
-    async def _grade_evidence_usage(self, final_answer: str, source_text: str) -> float:
-        """Grade how well the answer uses evidence from source material"""
+            lines = response.strip().split('\n')
+            for line in lines:
+                if ':' in line:
+                    key, value = line.split(':', 1)
+                    key = key.strip().lower()
+                    try:
+                        score = float(value.strip())
+                        if key == 'question_alignment':
+                            grades['question_alignment'] = score
+                        elif key == 'scientific_accuracy':
+                            grades['scientific_accuracy'] = score
+                        elif key == 'completeness':
+                            grades['completeness'] = score
+                        elif key == 'uncertainty_calibration':
+                            grades['uncertainty_calibration'] = score
+                        elif key == 'clarity_structure':
+                            grades['clarity_structure'] = score
+                        elif key == 'evidence_usage':
+                            grades['evidence_usage'] = score
+                    except ValueError:
+                        continue  # Skip lines that can't be parsed as float
+        except Exception as e:
+            print(f"Warning: Error parsing consolidated grades: {e}")
         
-        prompt = f"""
-Rate how effectively this answer uses evidence from the source material (scale 0.0-1.0):
-
-SOURCE TEXT: {source_text[:1000]}...
-
-ANSWER: {final_answer}
-
-Evaluation criteria:
-- Does the answer draw appropriately from the source material?
-- Are claims supported by evidence where appropriate?
-- Does it avoid making unsupported claims?
-- Is the relationship between evidence and conclusions clear?
-
-Provide only a numerical score (0.0-1.0):
-"""
+        # Calculate overall score (exclude the overall_score itself from calculation)
+        core_grades = [v for k, v in grades.items() if k != 'overall_score']
+        grades['overall_score'] = sum(core_grades) / len(core_grades)
         
-        response = await self.llm.generate(prompt, temperature=0.3)
-        try:
-            return float(response.strip())
-        except:
-            return 0.5
+        return grades
     
-    async def _enhance_authenticity(self, trace: str) -> str:
+    async def _enhance_logical_structure(self, trace: str) -> str:
         prompt = f"""
-Make this reasoning trace more authentic and natural. Add realistic thinking patterns:
+Enhance the logical flow and clarity of this reasoning trace while maintaining its natural, conversational style.
 
 Current trace: {trace}
 
-Enhance by adding:
-- Natural speech patterns and filler words ("hmm", "let me see", "actually")
-- Realistic corrections ("wait, that's not right", "let me reconsider")
-- Genuine uncertainty expressions ("I'm not sure", "maybe", "possibly")
-- Meta-cognitive awareness ("I'm getting confused", "let me step back")
-- Natural pauses and transitions
-- Building understanding gradually
-- Catching and correcting mistakes
+Improve by naturally weaving in:
+- Clearer logical transitions ("Given that...", "This leads me to think...", "Therefore...")
+- More explicit reasoning steps woven naturally into the flow
+- Natural error checking moments ("Let me double-check this...", "Wait, let me verify...")
+- Organic uncertainty expression ("The evidence seems to support...", "I'm less certain about...")
+- Smoother cause-and-effect relationships
+- Natural evaluation of alternatives ("But I should also consider...", "Another possibility is...")
+- Authentic validation moments ("This makes sense because...")
 
-Keep the scientific content accurate but make the thinking process feel genuinely human and authentic.
+**CRITICAL**: Keep the conversational, flowing style of expert thinking. Do NOT add structured headings, bullet points, or artificial phrases. Maintain the stream-of-consciousness feel while making the logic clearer.
+
+Return only the improved trace with natural expert language.
 """
         
         return await self.llm.generate(prompt, temperature=0.6)
     
-    async def _inject_realistic_reasoning_patterns(self, trace: str) -> str:
+    async def _inject_systematic_corrections(self, trace: str) -> str:
         prompt = f"""
-Add realistic reasoning errors and corrections to make this trace more authentic. Humans don't think perfectly - they make mistakes and correct them.
+Add natural self-correction moments to show authentic expert reasoning. Weave these organically into the flow.
 
 Current trace: {trace}
 
-Add patterns like:
-- Initial wrong assumptions that get corrected ("Oh wait, I misread that")
-- Overconfidence that gets tempered ("Actually, I'm less sure about this")
-- Logical missteps that get caught ("That doesn't follow")
-- Misinterpretations that get clarified ("Let me read this again")
-- False starts ("No, that's not the right approach")
+Naturally incorporate moments like:
+- Catching contradictions: "Wait, this contradicts what I said earlier about..."
+- Correcting generalizations: "Actually, let me be more precise - this only applies when..."
+- Recognizing weak evidence: "Hmm, the data doesn't really support such a broad claim..."
+- Refining claims: "Let me be more careful here - the evidence suggests..."
+- Checking assumptions: "I should double-check whether this assumption holds..."
+- Considering alternatives: "But I should also consider that this could mean..."
+- Catching oversights: "Oh, I need to account for the potential bias here..."
 
-Keep the final reasoning sound, but show the messy, error-prone process of getting there. This makes it more realistic and educational.
+**CRITICAL**: Make these feel like authentic moments of expert self-reflection, NOT structured analysis. Use natural, conversational language as if catching your own errors in real-time. Maintain the flowing, stream-of-consciousness style.
+
+Return only the enhanced trace with natural self-correction woven in.
 """
         
         return await self.llm.generate(prompt, temperature=0.7)
@@ -875,18 +982,19 @@ Keep the final reasoning sound, but show the messy, error-prone process of getti
         
         return max(0.1, min(0.9, 0.5 + 0.1 * (certainty_count - uncertainty_count)))
     
-    def _find_uncertainty_markers(self, text: str) -> List[str]:
+    def _find_logical_markers(self, text: str) -> List[str]:
         markers = []
-        for marker in self.authenticity_markers:
+        for marker in self.logical_rigor_markers:
             if marker in text.lower():
                 markers.append(marker)
         return markers
     
-    def _calculate_authenticity_score(self, trace: str) -> float:
-        # Calculate authenticity based on presence of natural thinking patterns
+    def _calculate_logical_rigor_score(self, trace: str) -> float:
+        # Calculate logical rigor based on presence of systematic reasoning patterns
         patterns = [
-            'hmm', 'wait', 'actually', 'let me', 'I wonder', 'maybe', 'but',
-            'oh', 'interesting', "I'm not sure", 'reconsider', 'step back'
+            'therefore', 'however', 'given that', 'this leads to', 'consequently',
+            'specifically', 'checking', 'verifying', 'alternatively', 'precisely',
+            'as a result', 'in contrast', 'furthermore', 'systematic'
         ]
         
         score = sum(1 for pattern in patterns if pattern in trace.lower())
@@ -919,10 +1027,12 @@ Keep the final reasoning sound, but show the messy, error-prone process of getti
 
 # Example usage and batch processing
 class BatchProcessor:
-    def __init__(self, generator: ReasoningTraceGenerator, quality_check: bool = False, min_quality_score: float = 6.0):
+    def __init__(self, generator: ReasoningTraceGenerator, quality_check: bool = False, 
+                 min_quality_score: float = 6.0, quality_judges: List[str] = None):
         self.generator = generator
         self.quality_check = quality_check
         self.min_quality_score = min_quality_score
+        self.quality_judges = quality_judges or ['claude-sonnet-3.7', 'gpt-4o']
         self.evaluator = LLMJudgeEvaluator() if quality_check else None
     
     async def _process_paper_with_question_variations(
@@ -969,10 +1079,10 @@ class BatchProcessor:
                 try:
                     # Generate reasoning trace for this specific question with natural temperature variation
                     trace = await self.generator.generate_reasoning_trace_for_question(
-                        paper, selected_question
+                        passage, selected_question
                     )
                     
-                    print(f"      Generated trace (authenticity: {trace['metadata']['authenticity_score']:.2f})")
+                    print(f"      Generated trace (logical rigor: {trace['metadata']['logical_rigor_score']:.2f})")
                     
                     # Quality check if enabled
                     if self.quality_check:
@@ -1024,12 +1134,10 @@ class BatchProcessor:
             sample_index=0
         )
         
-        # Use only sonnet 3.7 and gpt-4o for quality check (reuse existing logic)
-        subset_judges = ['claude-sonnet-3.7', 'gpt-4o']
-        
+        # Use configurable judge models for quality check
         try:
             # Reuse the existing evaluate_triplet method
-            ratings = await self.evaluator.evaluate_triplet(triplet, subset_judges)
+            ratings = await self.evaluator.evaluate_triplet(triplet, self.quality_judges)
             valid_ratings = [r for r in ratings if r.overall_score > 0]
             
             if not valid_ratings:
@@ -1072,7 +1180,7 @@ class BatchProcessor:
                 all_traces.extend(existing_traces)
         
         for i, paper in enumerate(papers):
-            print(f"Processing {i+1}/{len(papers)}: {passage.source_title}")
+            print(f"Processing {i+1}/{len(papers)}: {paper.source_title}")
             
             if traces_per_question > 1:
                 # New logic: Generate one question, then multiple reasoning traces for it
@@ -1114,11 +1222,11 @@ class BatchProcessor:
                             for _ in range(traces_per_paper)
                         ])
                         
-                        # Select best trace based on authenticity score
+                        # Select best trace based on logical rigor score
                         best_trace = max(paper_traces, 
-                                       key=lambda x: x['metadata']['authenticity_score'])
+                                       key=lambda x: x['metadata']['logical_rigor_score'])
                         
-                        print(f"    Generated trace (authenticity: {best_trace['metadata']['authenticity_score']:.2f})")
+                        print(f"    Generated trace (logical rigor: {best_trace['metadata']['logical_rigor_score']:.2f})")
                         
                         # Quality check if enabled
                         if self.quality_check:
@@ -1220,20 +1328,102 @@ class BatchProcessor:
         
         print(f"✅ Final dataset saved with {len(traces)} traces")
 
-def load_data_from_jsonl(file_path: str, max_samples: int = None) -> List[str]:
-    """Load text chunks from JSONL file with 'text' field"""
+def is_high_quality_scientific_text(text: str) -> tuple[bool, str]:
+    """
+    Filter for high-quality scientific text suitable for reasoning trace generation.
+    Returns (is_valid, reason_if_invalid)
+    """
+    import re
+    text = text.strip()
+    text_lower = text.lower()
+    
+    # Minimum length filter
+    if len(text) < 300:
+        return False, f"Too short ({len(text)} chars, min 300)"
+    
+    # Maximum length filter (avoid extremely long texts)
+    if len(text) > 50000:
+        return False, f"Too long ({len(text)} chars, max 50000)"
+    
+    # Check for references/bibliography sections
+    reference_indicators = [
+        'references', 'bibliography', 'works cited', 'citations',
+        'further reading', 'suggested reading'
+    ]
+    
+    # Strong indicators of reference sections
+    if any(indicator in text_lower[:100] for indicator in reference_indicators):
+        # Check if it's predominantly citations (multiple author-year patterns)
+        citation_patterns = [
+            r'\b[A-Z][a-z]+,?\s+[A-Z]\.',  # Author initials
+            r'\(\d{4}\)',  # Year in parentheses
+            r'\bet\s+al\.',  # et al.
+            r'\bpp?\.\s*\d+',  # page numbers
+            r'\bvol\.\s*\d+',  # volume numbers
+            r'\bdoi:',  # DOI indicators
+        ]
+        
+        import re
+        citation_matches = sum(len(re.findall(pattern, text)) for pattern in citation_patterns)
+        # If high density of citation patterns, likely a reference section
+        if citation_matches > len(text) / 200:  # Roughly 1 citation pattern per 200 chars
+            return False, "Appears to be references/bibliography section"
+    
+    # Check for acknowledgments sections
+    acknowledgment_indicators = [
+        'acknowledgment', 'acknowledgement', 'acknowledgments', 'acknowledgements',
+        'we thank', 'we are grateful', 'we would like to thank',
+        'the authors thank', 'the authors acknowledge',
+        'funding', 'supported by', 'grant number'
+    ]
+    
+    if any(indicator in text_lower[:200] for indicator in acknowledgment_indicators):
+        # Check if predominantly acknowledgments (gratitude expressions)
+        gratitude_patterns = [
+            r'\bthank\b', r'\bgrateful\b', r'\backnowledge\b',
+            r'\bsupport\b', r'\bfunding\b', r'\bgrant\b'
+        ]
+        gratitude_matches = sum(len(re.findall(pattern, text_lower)) for pattern in gratitude_patterns)
+        if gratitude_matches > 3:  # Multiple gratitude expressions
+            return False, "Appears to be acknowledgments section"
+    
+    # Check for appendix content
+    if text_lower.startswith(('appendix', 'supplementary', 'supplemental')):
+        return False, "Appears to be appendix/supplementary material"
+    
+    # Check for abstracts (information-light)
+    if 'abstract' in text_lower[:200]:
+        return False, "Appears to be abstract/summary (information-light)"
+    
+    return True, "Valid scientific content"
+
+def load_data_from_jsonl(file_path: str, max_samples: int = None, apply_quality_filter: bool = True) -> List[str]:
+    """Load and filter text chunks from JSONL file with 'text' field"""
     texts = []
+    filtered_count = 0
+    filter_reasons = {}
     
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             for i, line in enumerate(f):
-                if max_samples and i >= max_samples:
+                if max_samples and len(texts) >= max_samples:
                     break
                     
                 try:
                     data = json.loads(line.strip())
                     if 'text' in data and data['text'].strip():
-                        texts.append(data['text'])
+                        text = data['text'].strip()
+                        
+                        if apply_quality_filter:
+                            is_valid, reason = is_high_quality_scientific_text(text)
+                            if is_valid:
+                                texts.append(text)
+                            else:
+                                filtered_count += 1
+                                filter_reasons[reason] = filter_reasons.get(reason, 0) + 1
+                        else:
+                            texts.append(text)
+                            
                 except json.JSONDecodeError:
                     print(f"Warning: Invalid JSON on line {i+1}")
                     continue
@@ -1241,7 +1431,12 @@ def load_data_from_jsonl(file_path: str, max_samples: int = None) -> List[str]:
         print(f"Error: File '{file_path}' not found")
         return []
     
-    print(f"Loaded {len(texts)} text samples from {file_path}")
+    print(f"Loaded {len(texts)} high-quality text samples from {file_path}")
+    if apply_quality_filter and filtered_count > 0:
+        print(f"Filtered out {filtered_count} low-quality samples:")
+        for reason, count in sorted(filter_reasons.items(), key=lambda x: x[1], reverse=True):
+            print(f"  - {reason}: {count} samples")
+    
     return texts
 
 def convert_texts_to_passages(texts: List[str]) -> List[ScientificPassage]:
@@ -1370,25 +1565,54 @@ def parse_arguments():
     return parser.parse_args()
 
 async def main():
-    """Main function with command line argument support"""
+    """Main function with command line argument support and MPI distribution"""
+    # Configure logging based on MPI rank
+    if MPI_AVAILABLE:
+        if rank == 0:
+            logging.basicConfig(level=logging.INFO, format=f'[Rank {rank}] %(levelname)s: %(message)s')
+        else:
+            logging.basicConfig(level=logging.WARNING, format=f'[Rank {rank}] %(levelname)s: %(message)s')
+    else:
+        logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+    
+    logger = logging.getLogger(__name__)
+    
     args = parse_arguments()
     
-    print(f"Synthetic Reasoning Trace Generator")
-    print(f"Model: {args.model}")
-    print(f"Input file: {args.input_file}")
-    print(f"Max traces: {args.max_traces or 'All'}")
-    print(f"Output file: {args.output}")
-    print("-" * 50)
+    if rank == 0:
+        print(f"Synthetic Reasoning Trace Generator")
+        print(f"Model: {args.model}")
+        print(f"Input file: {args.input_file}")
+        print(f"Max traces: {args.max_traces or 'All'}")
+        if MPI_AVAILABLE:
+            print(f"MPI processes: {size}")
+        print("-" * 50)
     
-    # Load data from JSONL file
-    texts = load_data_from_jsonl(args.input_file, args.max_traces)
+    # Load data from JSONL file (all processes load to determine distribution)
+    texts = load_data_from_jsonl(args.input_file, args.max_traces, apply_quality_filter=(rank == 0))
     
     if not texts:
-        print("No text data loaded. Exiting.")
+        if rank == 0:
+            print("No text data loaded. Exiting.")
         return
     
+    # Distribute texts across MPI processes
+    if MPI_AVAILABLE and size > 1:
+        # Simple round-robin distribution
+        my_texts = [text for i, text in enumerate(texts) if i % size == rank]
+        logger.info(f"Assigned {len(my_texts)} texts to process (out of {len(texts)} total)")
+        
+        # Update output filename to include rank
+        base_name, ext = args.output.rsplit('.', 1) if '.' in args.output else (args.output, 'json')
+        my_output = f"{base_name}_rank{rank}.{ext}"
+    else:
+        my_texts = texts
+        my_output = args.output
+        if rank == 0:
+            logger.info(f"Processing {len(my_texts)} texts in single process mode")
+    
     # Convert texts to ScientificPassage objects
-    papers = convert_texts_to_passages(texts)
+    papers = convert_texts_to_passages(my_texts)
     
     # Initialize components with specified model
     try:
@@ -1400,41 +1624,48 @@ async def main():
             min_quality_score=args.min_quality_score
         )
         
-        print(f"Initialized LLM with model: {args.model}")
-        if args.grade_answers:
+        logger.info(f"Initialized LLM with model: {args.model}")
+        if args.grade_answers and rank == 0:
             print("Answer grading enabled for RL training")
-        if args.quality_check:
+        if args.quality_check and rank == 0:
             print(f"Quality checking enabled (min score: {args.min_quality_score}) using Claude Sonnet 3.7 & GPT-4o")
     except Exception as e:
-        print(f"Error initializing LLM: {e}")
+        logger.error(f"Error initializing LLM: {e}")
         return
     
     # Determine resume behavior
-    resume_enabled = not args.no_resume  # Default to resume unless --no-resume specified
+    resume_enabled = not args.no_resume
     
     # Generate traces with incremental saving
-    print(f"Generating reasoning traces for {len(papers)} text samples...")
-    print(f"Progress will be saved incrementally to: {args.output}")
-    if resume_enabled:
-        print("(You can interrupt and resume later - progress is saved after each trace)")
-        print("(Use --no-resume to start fresh)")
-    else:
-        print("(Starting fresh - ignoring any existing output file)")
-    print("-" * 50)
+    logger.info(f"Generating reasoning traces for {len(papers)} text samples...")
+    if rank == 0:
+        print(f"Progress will be saved incrementally to: {my_output}")
+        if resume_enabled:
+            print("(You can interrupt and resume later - progress is saved after each trace)")
+            print("(Use --no-resume to start fresh)")
+        else:
+            print("(Starting fresh - ignoring any existing output file)")
+        print("-" * 50)
     
     traces = await processor.process_paper_corpus(
         papers, 
         traces_per_paper=args.traces_per_sample,
         traces_per_question=args.traces_per_question,
-        output_file=args.output if resume_enabled else None,
+        output_file=my_output if resume_enabled else None,
         save_incrementally=resume_enabled
     )
     
     # Final save with completion status
-    processor.save_training_dataset(traces, args.output)
+    processor.save_training_dataset(traces, my_output)
     
-    print(f"✅ Generated {len(traces)} reasoning traces for training")
-    print(f"Final results saved to: {args.output}")
+    logger.info(f"Generated {len(traces)} reasoning traces for training")
+    logger.info(f"Results saved to: {my_output}")
+    
+    # Wait for all processes to complete if using MPI
+    if MPI_AVAILABLE and size > 1:
+        comm.Barrier()
+        if rank == 0:
+            print(f"✅ All {size} MPI processes completed. Results saved to *_rank*.json files")
 
 if __name__ == "__main__":
     asyncio.run(main())

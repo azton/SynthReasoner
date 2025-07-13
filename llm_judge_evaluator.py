@@ -13,6 +13,7 @@ import statistics
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 import logging
+from datetime import datetime
 from pathlib import Path
 import argparse
 import random
@@ -557,6 +558,197 @@ async def run_comparative_trace_evaluation():
     print(f"\n💾 Comprehensive results saved to: {output_file}")
     print("\n✅ Comparative evaluation completed!")
 
+async def run_comprehensive_file_comparison(trace_files: List[str], judge_models: List[str], 
+                                           max_samples_per_file: int = 10, output_file: str = "file_comparison.json"):
+    """Run comprehensive comparison across multiple JSON files with statistical analysis"""
+    print("🔍 Comprehensive Multi-File Comparison")
+    print("=" * 60)
+    
+    evaluator = LLMJudgeEvaluator()
+    file_results = {}
+    
+    # Process each file
+    for trace_file in trace_files:
+        print(f"\n📁 Processing {trace_file}")
+        
+        # Extract file identifier
+        file_id = Path(trace_file).stem.replace('_traces', '').replace('traces_', '')
+        
+        # Load triplets
+        triplets = evaluator.load_qrs_triplets([trace_file])
+        
+        if not triplets:
+            print(f"   ❌ No triplets found in {trace_file}")
+            continue
+        
+        # Sample triplets for evaluation
+        sample_triplets = triplets[:max_samples_per_file]
+        print(f"   📊 Evaluating {len(sample_triplets)} triplets")
+        
+        # Evaluate all sampled triplets
+        all_ratings = []
+        for i, triplet in enumerate(sample_triplets):
+            print(f"   🔎 Evaluating triplet {i+1}/{len(sample_triplets)}")
+            
+            try:
+                ratings = await evaluator.evaluate_triplet(triplet, judge_models)
+                valid_ratings = [r for r in ratings if r.overall_score > 0]
+                all_ratings.extend(valid_ratings)
+                
+                if valid_ratings:
+                    avg_score = sum(r.overall_score for r in valid_ratings) / len(valid_ratings)
+                    print(f"      ✅ Average score: {avg_score:.2f} ({len(valid_ratings)} judges)")
+                else:
+                    print(f"      ❌ No valid ratings")
+            except Exception as e:
+                print(f"      ❌ Error evaluating triplet: {e}")
+                continue
+        
+        if all_ratings:
+            # Calculate comprehensive statistics
+            stats = evaluator.calculate_statistics(all_ratings)
+            
+            # Store detailed results
+            file_results[file_id] = {
+                'file_path': trace_file,
+                'total_triplets': len(triplets),
+                'evaluated_triplets': len(sample_triplets),
+                'total_ratings': len(all_ratings),
+                'ratings_per_triplet': len(all_ratings) / len(sample_triplets) if sample_triplets else 0,
+                'statistics': stats,
+                'detailed_ratings': [
+                    {
+                        'judge_model': r.judge_model,
+                        'overall_score': r.overall_score,
+                        'reasoning_quality': r.reasoning_quality,
+                        'solution_accuracy': r.solution_accuracy,
+                        'coherence': r.coherence,
+                        'explanation': r.explanation
+                    } for r in all_ratings
+                ]
+            }
+            
+            print(f"   📈 File summary: {len(all_ratings)} total ratings, "
+                  f"avg overall score: {stats['overall_score']['mean']:.2f}±{stats['overall_score']['std_dev']:.2f}")
+        else:
+            print(f"   ❌ No successful evaluations for {trace_file}")
+    
+    # Generate comparison report
+    print(f"\n📊 COMPREHENSIVE FILE COMPARISON")
+    print("=" * 80)
+    
+    if not file_results:
+        print("❌ No successful evaluations to compare")
+        return
+    
+    # Sort by overall score
+    ranked_files = sorted(file_results.items(), 
+                         key=lambda x: x[1]['statistics']['overall_score']['mean'], 
+                         reverse=True)
+    
+    # Display comparison table
+    print(f"{'Rank':<4} {'File ID':<25} {'Samples':<8} {'Ratings':<8} {'Overall':<12} {'Reasoning':<12} {'Accuracy':<12} {'Coherence':<12}")
+    print("-" * 115)
+    
+    for rank, (file_id, results) in enumerate(ranked_files, 1):
+        stats = results['statistics']
+        overall = f"{stats['overall_score']['mean']:.2f}±{stats['overall_score']['std_dev']:.2f}"
+        reasoning = f"{stats['reasoning_quality']['mean']:.2f}±{stats['reasoning_quality']['std_dev']:.2f}"
+        accuracy = f"{stats['solution_accuracy']['mean']:.2f}±{stats['solution_accuracy']['std_dev']:.2f}"
+        coherence = f"{stats['coherence']['mean']:.2f}±{stats['coherence']['std_dev']:.2f}"
+        
+        print(f"{rank:<4} {file_id:<25} {results['evaluated_triplets']:<8} {results['total_ratings']:<8} "
+              f"{overall:<12} {reasoning:<12} {accuracy:<12} {coherence:<12}")
+    
+    # Statistical significance tests (basic)
+    print(f"\n📊 STATISTICAL ANALYSIS")
+    print("-" * 40)
+    
+    if len(ranked_files) >= 2:
+        best_file = ranked_files[0]
+        second_file = ranked_files[1]
+        
+        best_scores = [r['overall_score'] for r in best_file[1]['detailed_ratings']]
+        second_scores = [r['overall_score'] for r in second_file[1]['detailed_ratings']]
+        
+        # Calculate effect size (Cohen's d)
+        if len(best_scores) > 1 and len(second_scores) > 1:
+            import statistics
+            
+            mean_diff = statistics.mean(best_scores) - statistics.mean(second_scores)
+            pooled_std = ((statistics.stdev(best_scores)**2 * (len(best_scores)-1) + 
+                          statistics.stdev(second_scores)**2 * (len(second_scores)-1)) / 
+                         (len(best_scores) + len(second_scores) - 2))**0.5
+            
+            cohens_d = mean_diff / pooled_std if pooled_std > 0 else 0
+            
+            print(f"Best performer: {best_file[0]} (n={len(best_scores)})")
+            print(f"Second best: {second_file[0]} (n={len(second_scores)})")
+            print(f"Mean difference: {mean_diff:.3f}")
+            print(f"Effect size (Cohen's d): {cohens_d:.3f}")
+            
+            if abs(cohens_d) < 0.2:
+                effect = "negligible"
+            elif abs(cohens_d) < 0.5:
+                effect = "small"
+            elif abs(cohens_d) < 0.8:
+                effect = "medium"
+            else:
+                effect = "large"
+            
+            print(f"Effect size interpretation: {effect}")
+    
+    # Best performers by metric
+    print(f"\n🏆 BEST PERFORMERS BY METRIC")
+    print("-" * 40)
+    
+    metrics = ['overall_score', 'reasoning_quality', 'solution_accuracy', 'coherence']
+    for metric in metrics:
+        best = max(file_results.items(), key=lambda x: x[1]['statistics'][metric]['mean'])
+        score = best[1]['statistics'][metric]['mean']
+        std = best[1]['statistics'][metric]['std_dev']
+        print(f"{metric.replace('_', ' ').title():<20}: {best[0]} ({score:.2f}±{std:.2f})")
+    
+    # Save comprehensive results
+    comparison_results = {
+        'metadata': {
+            'evaluation_timestamp': datetime.now().isoformat(),
+            'total_files': len(trace_files),
+            'successful_files': len(file_results),
+            'judge_models': judge_models,
+            'max_samples_per_file': max_samples_per_file
+        },
+        'file_rankings': [
+            {
+                'rank': rank,
+                'file_id': file_id,
+                'file_path': results['file_path'],
+                'evaluated_triplets': results['evaluated_triplets'],
+                'total_ratings': results['total_ratings'],
+                'statistics': results['statistics']
+            }
+            for rank, (file_id, results) in enumerate(ranked_files, 1)
+        ],
+        'best_performers': {
+            metric: {
+                'file_id': max(file_results.items(), key=lambda x: x[1]['statistics'][metric]['mean'])[0],
+                'score': max(file_results.items(), key=lambda x: x[1]['statistics'][metric]['mean'])[1]['statistics'][metric]['mean'],
+                'std_dev': max(file_results.items(), key=lambda x: x[1]['statistics'][metric]['mean'])[1]['statistics'][metric]['std_dev']
+            }
+            for metric in metrics
+        },
+        'detailed_file_results': file_results
+    }
+    
+    # Save results
+    with open(output_file, 'w', encoding='utf-8') as f:
+        json.dump(comparison_results, f, indent=2, ensure_ascii=False)
+    
+    print(f"\n💾 Comprehensive comparison saved to: {output_file}")
+    print("✅ Multi-file comparison completed!")
+    
+    return comparison_results
+
 def main():
     """Main CLI interface"""
     parser = argparse.ArgumentParser(description="LLM-as-a-Judge Evaluation for QRS Triplets")
@@ -567,23 +759,44 @@ def main():
                         help="Judge models to use")
     parser.add_argument("--output", default="evaluation_results.json", 
                         help="Output file for results")
+    parser.add_argument("--compare-files", action="store_true",
+                        help="Run comprehensive comparison across multiple files")
+    parser.add_argument("--max-samples", type=int, default=10,
+                        help="Maximum samples to evaluate per file for comparison")
+    parser.add_argument("--comparison-output", default="file_comparison.json",
+                        help="Output file for file comparison results")
     
     args = parser.parse_args()
     
+    # Auto-discover trace files if none specified
     if not args.trace_files:
-        # Auto-discover trace files
-        trace_files = list(Path('.').glob('*_traces.json'))
+        trace_files = list(Path('.').glob('*_traces*.json'))
         args.trace_files = [str(f) for f in trace_files]
         print(f"Auto-discovered trace files: {args.trace_files}")
+    else:
+        print(f"Using specified trace files: {args.trace_files}")
     
-    evaluator = LLMJudgeEvaluator()
+    if not args.trace_files:
+        print("❌ No trace files found. Please specify files or ensure *_traces*.json files are present.")
+        return
     
-    # Run evaluation
-    asyncio.run(evaluator.evaluate_all_triplets(
-        trace_files=args.trace_files,
-        judge_models=args.judges,
-        output_file=args.output
-    ))
+    if args.compare_files:
+        # Run comprehensive file comparison
+        print("🔄 Running comprehensive file comparison...")
+        asyncio.run(run_comprehensive_file_comparison(
+            trace_files=args.trace_files,
+            judge_models=args.judges,
+            max_samples_per_file=args.max_samples,
+            output_file=args.comparison_output
+        ))
+    else:
+        # Run standard evaluation
+        evaluator = LLMJudgeEvaluator()
+        asyncio.run(evaluator.evaluate_all_triplets(
+            trace_files=args.trace_files,
+            judge_models=args.judges,
+            output_file=args.output
+        ))
 
 if __name__ == "__main__":
-    asyncio.run(run_comparative_trace_evaluation())
+    main()
