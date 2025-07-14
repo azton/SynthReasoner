@@ -1171,6 +1171,7 @@ class BatchProcessor:
         """
         
         all_traces = []
+        processed_titles = set()
         
         # Load existing traces if file exists
         if output_file and save_incrementally:
@@ -1178,9 +1179,16 @@ class BatchProcessor:
             if existing_traces:
                 print(f"Loaded {len(existing_traces)} existing traces from {output_file}")
                 all_traces.extend(existing_traces)
+                processed_titles = self._get_processed_paper_titles(existing_traces)
+                print(f"Found {len(processed_titles)} already processed papers")
         
         for i, paper in enumerate(papers):
             print(f"Processing {i+1}/{len(papers)}: {paper.source_title}")
+            
+            # Skip if paper already processed
+            if paper.source_title in processed_titles:
+                print(f"  🔄 Skipping {paper.source_title} - already processed")
+                continue
             
             if traces_per_question > 1:
                 # New logic: Generate one question, then multiple reasoning traces for it
@@ -1277,6 +1285,14 @@ class BatchProcessor:
                 return data.get('questions', [])
         except (FileNotFoundError, json.JSONDecodeError, KeyError):
             return []
+    
+    def _get_processed_paper_titles(self, traces: List[Dict[str, Any]]) -> set:
+        """Extract set of paper titles that have already been processed"""
+        processed_titles = set()
+        for trace in traces:
+            if 'source_paper' in trace and 'title' in trace['source_paper']:
+                processed_titles.add(trace['source_paper']['title'])
+        return processed_titles
     
     def _save_traces_incrementally(self, traces: List[Dict[str, Any]], output_file: str):
         """Save traces incrementally with metadata"""
@@ -1439,7 +1455,7 @@ def load_data_from_jsonl(file_path: str, max_samples: int = None, apply_quality_
     
     return texts
 
-def convert_texts_to_passages(texts: List[str]) -> List[ScientificPassage]:
+def convert_texts_to_passages(texts: List[str], start_index: int = 0) -> List[ScientificPassage]:
     """Convert text chunks to ScientificPassage objects for processing"""
     passages = []
     
@@ -1447,12 +1463,15 @@ def convert_texts_to_passages(texts: List[str]) -> List[ScientificPassage]:
         # Detect section type based on content patterns (basic heuristics)
         section_type = _detect_section_type(text)
         
+        # Use start_index to maintain consistent paper numbering across MPI ranks
+        paper_number = start_index + i + 1
+        
         passages.append(ScientificPassage(
             content=text,
             section_type=section_type,
-            source_title=f"Scientific Paper {i+1}",  # Could be extracted from metadata if available
+            source_title=f"Scientific Paper {paper_number}",  # Could be extracted from metadata if available
             domain="General Science",  # Could be inferred or provided as metadata
-            passage_id=f"passage_{i+1}"
+            passage_id=f"passage_{paper_number}"
         ))
     
     return passages
@@ -1598,8 +1617,10 @@ async def main():
     
     # Distribute texts across MPI processes
     if MPI_AVAILABLE and size > 1:
-        # Simple round-robin distribution
-        my_texts = [text for i, text in enumerate(texts) if i % size == rank]
+        # Simple round-robin distribution - keep track of original indices
+        my_text_indices = [i for i in range(len(texts)) if i % size == rank]
+        my_texts = [texts[i] for i in my_text_indices]
+        start_index = my_text_indices[0] if my_text_indices else 0
         logger.info(f"Assigned {len(my_texts)} texts to process (out of {len(texts)} total)")
         
         # Update output filename to include rank
@@ -1607,12 +1628,13 @@ async def main():
         my_output = f"{base_name}_rank{rank}.{ext}"
     else:
         my_texts = texts
+        start_index = 0
         my_output = args.output
         if rank == 0:
             logger.info(f"Processing {len(my_texts)} texts in single process mode")
     
-    # Convert texts to ScientificPassage objects
-    papers = convert_texts_to_passages(my_texts)
+    # Convert texts to ScientificPassage objects with correct indexing
+    papers = convert_texts_to_passages(my_texts, start_index)
     
     # Initialize components with specified model
     try:

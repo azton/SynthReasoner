@@ -1,6 +1,26 @@
-# Synthetic Reasoning Trace Generator v2
+# SynthReasoner: Synthetic Reasoning Trace Generator
 
 An advanced tool for generating realistic reasoning traces from scientific text using Large Language Models (LLMs) via Argo server. This system creates high-quality question-answer pairs with authentic human-like reasoning patterns for training AI models.
+
+## New Features
+
+### 🚀 **Instruct Tuning Dataset Conversion**
+- Convert reasoning traces to HuggingFace TRL SFT trainer format
+- Automatic filtering of corrupted samples (ARGO_USER errors)
+- 10 diverse system prompts for reasoning instruction
+- JSONL output ready for fine-tuning
+
+### 🔄 **Improved Resume Logic** 
+- Smart paper-level resume based on "Scientific Paper N" titles
+- MPI-aware consistent paper numbering across ranks
+- Skip already processed papers automatically
+- Robust incremental processing
+
+### 🧹 **Data Cleaning Tools**
+- Batch cleaning of reasoning trace files
+- Remove corrupted ARGO_USER error samples
+- Preserve file structure and metadata
+- Processing statistics and error reporting
 
 ## Overview
 
@@ -83,6 +103,38 @@ python llm_synthetic_reasoner_v2.py --no-resume --max-traces 5
 
 # Resume from previous run (default behavior)
 python llm_synthetic_reasoner_v2.py --max-traces 10
+```
+
+### MPI Parallel Processing
+
+```bash
+# Run with MPI for parallel processing across multiple nodes
+mpiexec -np 12 python -u llm_synthetic_reasoner.py \
+  --model gpt41 \
+  --output cosmo-paper-traces/gpt41_fulltrace.json \
+  --traces-per-sample 2 \
+  --grade-answers \
+  --resume
+```
+
+### Data Cleaning
+
+```bash
+# Clean all reasoning trace files (remove ARGO_USER errors)
+python clean_reasoning_traces.py cosmo-paper-traces/*.json
+
+# Clean with backup to separate directory
+python clean_reasoning_traces.py cosmo-paper-traces/*.json --output-dir cleaned_traces --suffix _clean
+```
+
+### Convert to Instruct Dataset
+
+```bash
+# Convert reasoning traces to instruct tuning format
+python convert_to_instruct_dataset.py cosmo-paper-traces/*.json -o instruct_dataset.jsonl
+
+# Limit number of samples for testing
+python convert_to_instruct_dataset.py cosmo-paper-traces/gpt41_fulltrace_rank0.json --max-samples 1000
 ```
 
 ### Command Line Options
@@ -273,6 +325,36 @@ python llm_synthetic_reasoner_v2.py \
   --max-traces 3 \
   --output test_traces.json
 ```
+
+## Tools Included
+
+### 1. `llm_synthetic_reasoner.py`
+Main reasoning trace generator with MPI support and improved resume logic.
+
+### 2. `convert_to_instruct_dataset.py` 
+Convert reasoning traces to HuggingFace TRL SFT trainer format:
+```bash
+python convert_to_instruct_dataset.py [input_files] -o output.jsonl --max-samples N
+```
+
+### 3. `clean_reasoning_traces.py`
+Clean reasoning trace files by removing corrupted samples:
+```bash
+python clean_reasoning_traces.py [input_files] --output-dir [dir] --suffix [suffix]
+```
+
+### 4. Helper Scripts
+- `llm_interface.py` - Unified LLM client interface
+- `llm_judge_evaluator.py` - Quality evaluation system
+- `gemini_client.py` - Gemini API integration
+
+## Recent Updates
+
+- ✅ **Smart Resume Logic**: Papers are tracked by title, skipping already processed ones
+- ✅ **MPI Paper Numbering**: Consistent paper IDs across all MPI ranks  
+- ✅ **Error Filtering**: Automatic detection and removal of ARGO_USER errors
+- ✅ **Instruct Format**: Ready-to-use datasets for SFT training
+- ✅ **Data Cleaning**: Batch processing tools for large datasets
 
 ## License
 
