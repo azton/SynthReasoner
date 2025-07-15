@@ -74,36 +74,36 @@ pip install asyncio argparse json pathlib dataclasses typing
 
 ```bash
 # Generate 5 traces for testing (default settings)
-python llm_synthetic_reasoner_v2.py --max-traces 5
+python llm_synthetic_reasoner.py --max-traces 5
 
 # Process all samples in dataset
-python llm_synthetic_reasoner_v2.py
+python llm_synthetic_reasoner.py
 
 # Use different model and input file
-python llm_synthetic_reasoner_v2.py --model gpt4o --input-file my_data.jsonl --max-traces 10
+python llm_synthetic_reasoner.py --model gpt4o --input-file my_data.jsonl --max-traces 10
 ```
 
 ### Quality Control
 
 ```bash
 # Enable quality checking (slower but higher quality)
-python llm_synthetic_reasoner_v2.py --quality-check --min-quality-score 6.5 --max-traces 5
+python llm_synthetic_reasoner.py --quality-check --min-quality-score 6.5 --max-traces 5
 
 # Grade answers for RL training
-python llm_synthetic_reasoner_v2.py --grade-answers --max-traces 5
+python llm_synthetic_reasoner.py --grade-answers --max-traces 5
 ```
 
 ### Advanced Options
 
 ```bash
 # Generate multiple traces per question using temperature variation
-python llm_synthetic_reasoner_v2.py --traces-per-question 3 --max-traces 5
+python llm_synthetic_reasoner.py --traces-per-question 3 --max-traces 5
 
 # Start fresh (ignore existing output)
-python llm_synthetic_reasoner_v2.py --no-resume --max-traces 5
+python llm_synthetic_reasoner.py --no-resume --max-traces 5
 
 # Resume from previous run (default behavior)
-python llm_synthetic_reasoner_v2.py --max-traces 10
+python llm_synthetic_reasoner.py --max-traces 10
 ```
 
 ### MPI Parallel Processing
@@ -305,7 +305,7 @@ The script generates a JSON file with the following structure:
 
 ### Generate High-Quality Dataset
 ```bash
-python llm_synthetic_reasoner_v2.py \
+python llm_synthetic_reasoner.py \
   --model claudesonnet4 \
   --input-file scientific_papers.jsonl \
   --quality-check \
@@ -317,7 +317,7 @@ python llm_synthetic_reasoner_v2.py \
 
 ### Create Question Variations
 ```bash
-python llm_synthetic_reasoner_v2.py \
+python llm_synthetic_reasoner.py \
   --traces-per-question 3 \
   --max-traces 10 \
   --output question_variations.json
@@ -325,7 +325,7 @@ python llm_synthetic_reasoner_v2.py \
 
 ### Quick Testing
 ```bash
-python llm_synthetic_reasoner_v2.py \
+python llm_synthetic_reasoner.py \
   --max-traces 3 \
   --output test_traces.json
 ```
