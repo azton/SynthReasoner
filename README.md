@@ -6,6 +6,7 @@ An advanced tool for generating realistic reasoning traces from scientific text 
 
 ### 🚀 **Instruct Tuning Dataset Conversion**
 - Convert reasoning traces to HuggingFace TRL SFT trainer format
+- Convert MCQ datasets to natural reasoning traces
 - Automatic filtering of corrupted samples (ARGO_USER errors)
 - 10 diverse system prompts for reasoning instruction
 - JSONL output ready for fine-tuning
@@ -132,6 +133,9 @@ python clean_reasoning_traces.py cosmo-paper-traces/*.json --output-dir cleaned_
 ```bash
 # Convert reasoning traces to instruct tuning format
 python convert_to_instruct_dataset.py cosmo-paper-traces/*.json -o instruct_dataset.jsonl
+
+# Convert MCQ datasets to natural reasoning traces
+python convert_mcq_reasoning.py --input mcq_data.jsonl --output mcq_reasoning.jsonl
 
 # Limit number of samples for testing
 python convert_to_instruct_dataset.py cosmo-paper-traces/gpt41_fulltrace_rank0.json --max-samples 1000
@@ -337,19 +341,40 @@ Convert reasoning traces to HuggingFace TRL SFT trainer format:
 python convert_to_instruct_dataset.py [input_files] -o output.jsonl --max-samples N
 ```
 
-### 3. `clean_reasoning_traces.py`
+### 3. `convert_mcq_reasoning.py`
+Convert MCQ datasets to natural reasoning traces with fluid exploration:
+```bash
+# Convert MCQ with multiple choices
+python convert_mcq_reasoning.py --input mcq_data.jsonl --output reasoning_traces.jsonl --model gpt4o
+
+# Convert open-ended questions with ground truth
+python convert_mcq_reasoning.py --input open_ended.jsonl --answer-field "correct_answer" --model gpt4o
+
+# Generate multiple reasoning variations per question
+python convert_mcq_reasoning.py --input data.jsonl --traces-per-question 3 --max-questions 50
+```
+
+**Key Features:**
+- **Fluid Reasoning**: Explores possibilities naturally without referencing "Choice A/B/C"
+- **Hidden Choices**: Answer choices guide reasoning but don't appear in user input
+- **Natural Answers**: Final answers state actual content instead of meaningless letters
+- **Dual Support**: Handles both traditional MCQ and open-ended questions with ground truth
+- **Instruct Ready**: Outputs HuggingFace TRL SFT trainer format
+
+### 4. `clean_reasoning_traces.py`
 Clean reasoning trace files by removing corrupted samples:
 ```bash
 python clean_reasoning_traces.py [input_files] --output-dir [dir] --suffix [suffix]
 ```
 
-### 4. Helper Scripts
+### 5. Helper Scripts
 - `llm_interface.py` - Unified LLM client interface
 - `llm_judge_evaluator.py` - Quality evaluation system
 - `gemini_client.py` - Gemini API integration
 
 ## Recent Updates
 
+- ✅ **MCQ Reasoning Generation**: Convert MCQ datasets to natural reasoning traces with fluid exploration
 - ✅ **Smart Resume Logic**: Papers are tracked by title, skipping already processed ones
 - ✅ **MPI Paper Numbering**: Consistent paper IDs across all MPI ranks  
 - ✅ **Error Filtering**: Automatic detection and removal of ARGO_USER errors
