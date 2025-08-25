@@ -31,8 +31,9 @@ import json
 import re
 import time
 import logging
+import glob
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Iterator, Tuple
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 
@@ -1297,6 +1298,12 @@ class BatchProcessor:
     def _save_traces_incrementally(self, traces: List[Dict[str, Any]], output_file: str):
         """Save traces incrementally with metadata"""
         from datetime import datetime
+        import os
+        
+        # Ensure output directory exists
+        output_dir = os.path.dirname(output_file)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
         
         output_data = {
             "metadata": {
@@ -1310,24 +1317,23 @@ class BatchProcessor:
         
         # Write to temporary file first, then rename for atomic operation
         temp_file = output_file + ".tmp"
-        try:
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                json.dump(output_data, f, indent=2, ensure_ascii=False)
-            
-            # Atomic rename
-            import os
-            os.rename(temp_file, output_file)
-        except Exception as e:
-            print(f"Warning: Could not save incrementally: {e}")
-            # Clean up temp file if it exists
-            try:
-                os.remove(temp_file)
-            except:
-                pass
+        
+        # No try-except here - let failures propagate for better debugging
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            json.dump(output_data, f, indent=2, ensure_ascii=False)
+        
+        # Atomic rename
+        os.rename(temp_file, output_file)
     
     def save_training_dataset(self, traces: List[Dict[str, Any]], filename: str):
         """Save traces in final format suitable for training."""
         from datetime import datetime
+        import os
+        
+        # Ensure output directory exists
+        output_dir = os.path.dirname(filename)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
         
         output_data = {
             "metadata": {
@@ -1343,6 +1349,104 @@ class BatchProcessor:
             json.dump(output_data, f, indent=2, ensure_ascii=False)
         
         print(f"✅ Final dataset saved with {len(traces)} traces")
+
+def discover_input_files(pattern: str) -> List[str]:
+    """
+    Discover input files matching the given pattern (supports wildcards).
+    Returns sorted list of matching file paths.
+    """
+    try:
+        files = glob.glob(pattern, recursive=True)
+        if not files:
+            # Try to handle the case where pattern is a single file without wildcards
+            if Path(pattern).exists():
+                files = [pattern]
+            else:
+                print(f"Warning: No files found matching pattern: {pattern}")
+                return []
+        
+        # Sort for consistent ordering across ranks
+        files.sort()
+        print(f"Discovered {len(files)} files matching pattern: {pattern}")
+        return files
+    except Exception as e:
+        print(f"Error discovering files with pattern '{pattern}': {e}")
+        return []
+
+def stream_texts_from_files(file_paths: List[str], max_samples: int = None, 
+                          apply_quality_filter: bool = True) -> Iterator[Tuple[str, str, int]]:
+    """
+    Stream text samples from multiple JSONL files.
+    Yields (text, source_file, sample_index) tuples.
+    """
+    total_yielded = 0
+    global_sample_index = 0
+    filtered_count = 0
+    filter_reasons = {}
+    
+    for file_path in file_paths:
+        print(f"Processing file: {file_path}")
+        file_sample_count = 0
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line_num, line in enumerate(f, 1):
+                    if max_samples and total_yielded >= max_samples:
+                        return
+                    
+                    try:
+                        data = json.loads(line.strip())
+                        if 'text' in data and data['text'].strip():
+                            text = data['text'].strip()
+                            
+                            if apply_quality_filter:
+                                is_valid, reason = is_high_quality_scientific_text(text)
+                                if is_valid:
+                                    yield (text, file_path, global_sample_index)
+                                    total_yielded += 1
+                                    file_sample_count += 1
+                                    global_sample_index += 1
+                                else:
+                                    filtered_count += 1
+                                    filter_reasons[reason] = filter_reasons.get(reason, 0) + 1
+                                    global_sample_index += 1
+                            else:
+                                yield (text, file_path, global_sample_index)
+                                total_yielded += 1
+                                file_sample_count += 1
+                                global_sample_index += 1
+                                
+                    except json.JSONDecodeError:
+                        print(f"Warning: Invalid JSON on line {line_num} in {file_path}")
+                        continue
+        except FileNotFoundError:
+            print(f"Warning: File not found: {file_path}")
+            continue
+        except Exception as e:
+            print(f"Warning: Error processing file {file_path}: {e}")
+            continue
+        
+        print(f"  Processed {file_sample_count} valid samples from {file_path}")
+    
+    print(f"\nTotal samples yielded: {total_yielded}")
+    if apply_quality_filter and filtered_count > 0:
+        print(f"Filtered out {filtered_count} low-quality samples:")
+        for reason, count in sorted(filter_reasons.items(), key=lambda x: x[1], reverse=True):
+            print(f"  - {reason}: {count} samples")
+
+def distribute_files_across_ranks(file_paths: List[str], rank: int, size: int) -> List[str]:
+    """
+    Distribute files across MPI ranks to ensure no overlap.
+    Each rank gets a subset of files to process.
+    """
+    if size <= 1:
+        return file_paths
+    
+    # Simple round-robin distribution of files
+    my_files = [file_paths[i] for i in range(len(file_paths)) if i % size == rank]
+    print(f"Rank {rank}: assigned {len(my_files)} files out of {len(file_paths)} total")
+    
+    return my_files
 
 def is_high_quality_scientific_text(text: str) -> tuple[bool, str]:
     """
@@ -1455,26 +1559,7 @@ def load_data_from_jsonl(file_path: str, max_samples: int = None, apply_quality_
     
     return texts
 
-def convert_texts_to_passages(texts: List[str], start_index: int = 0) -> List[ScientificPassage]:
-    """Convert text chunks to ScientificPassage objects for processing"""
-    passages = []
-    
-    for i, text in enumerate(texts):
-        # Detect section type based on content patterns (basic heuristics)
-        section_type = _detect_section_type(text)
-        
-        # Use start_index to maintain consistent paper numbering across MPI ranks
-        paper_number = start_index + i + 1
-        
-        passages.append(ScientificPassage(
-            content=text,
-            section_type=section_type,
-            source_title=f"Scientific Paper {paper_number}",  # Could be extracted from metadata if available
-            domain="General Science",  # Could be inferred or provided as metadata
-            passage_id=f"passage_{paper_number}"
-        ))
-    
-    return passages
+# Note: convert_texts_to_passages function is now handled inline in streaming processing
 
 def _detect_section_type(text: str) -> str:
     """Basic heuristic to detect what type of section this passage is from"""
@@ -1516,10 +1601,10 @@ def parse_arguments():
     )
     
     parser.add_argument(
-        "--input-file",
+        "--input-pattern",
         type=str,
         default="../data/heuristic_filtered_cosmo_limited.jsonl",
-        help="Input JSONL file with text chunks in 'text' field (default: ../data/heuristic_filtered_cosmo_limited.jsonl)"
+        help="Input file pattern (supports wildcards) for JSONL files with text chunks in 'text' field (default: ../data/heuristic_filtered_cosmo_limited.jsonl)"
     )
     
     parser.add_argument(
@@ -1583,6 +1668,151 @@ def parse_arguments():
     
     return parser.parse_args()
 
+async def process_files_streaming(
+    processor,
+    file_paths: List[str],
+    max_samples: int = None,
+    traces_per_sample: int = 1,
+    traces_per_question: int = 1,
+    output_file: str = None,
+    save_incrementally: bool = True
+) -> List[Dict[str, Any]]:
+    """
+    Process files using streaming approach to reduce memory usage.
+    """
+    all_traces = []
+    processed_samples = 0
+    processed_titles = set()
+    
+    # Load existing traces if resuming
+    if output_file and save_incrementally:
+        existing_traces = processor._load_existing_traces(output_file)
+        if existing_traces:
+            print(f"Loaded {len(existing_traces)} existing traces from {output_file}")
+            all_traces.extend(existing_traces)
+            processed_titles = processor._get_processed_paper_titles(existing_traces)
+            processed_samples = len(existing_traces)
+            print(f"Found {len(processed_titles)} already processed papers")
+    
+    # Stream through files and process samples
+    sample_count = 0
+    for text, source_file, global_index in stream_texts_from_files(
+        file_paths, 
+        max_samples=max_samples, 
+        apply_quality_filter=True
+    ):
+        sample_count += 1
+        
+        # Create a unique title using file and sample info
+        file_name = Path(source_file).stem
+        sample_title = f"Sample {global_index} from {file_name}"
+        
+        # Skip if already processed (for resume functionality)
+        if sample_title in processed_titles:
+            print(f"  🔄 Skipping {sample_title} - already processed")
+            continue
+        
+        # Convert text to ScientificPassage
+        passage = ScientificPassage(
+            content=text,
+            section_type=_detect_section_type(text),
+            source_title=sample_title,
+            domain="General Science",
+            passage_id=f"passage_{global_index}"
+        )
+        
+        print(f"Processing sample {sample_count}: {sample_title}")
+        
+        try:
+            if traces_per_question > 1:
+                # Generate multiple traces for same question
+                sample_traces = await processor._process_paper_with_question_variations(
+                    passage, traces_per_question, traces_per_sample
+                )
+                
+                for trace in sample_traces:
+                    trace['sample_index'] = len(all_traces)
+                    if processor.quality_check:
+                        trace['metadata']['quality_checked'] = True
+                        trace['metadata']['min_quality_threshold'] = processor.min_quality_score
+                    
+                    all_traces.append(trace)
+                    
+                    # Save incrementally after each trace
+                    if output_file and save_incrementally:
+                        processor._save_traces_incrementally(all_traces, output_file)
+                        print(f"  💾 Saved {len(all_traces)} traces to {output_file}")
+            else:
+                # Generate single trace per sample
+                max_attempts = 3
+                accepted_trace = None
+                
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        print(f"  Attempt {attempt}/{max_attempts}")
+                        
+                        # Generate traces for this sample
+                        paper_traces = await asyncio.gather(*[
+                            processor.generator.generate_reasoning_trace(passage) 
+                            for _ in range(traces_per_sample)
+                        ])
+                        
+                        # Select best trace
+                        best_trace = max(paper_traces, 
+                                       key=lambda x: x['metadata']['logical_rigor_score'])
+                        
+                        print(f"    Generated trace (logical rigor: {best_trace['metadata']['logical_rigor_score']:.2f})")
+                        
+                        # Quality check if enabled
+                        if processor.quality_check:
+                            quality_score = await processor._evaluate_trace_quality(best_trace)
+                            
+                            if quality_score >= processor.min_quality_score:
+                                print(f"    ✅ Quality check passed ({quality_score:.1f} >= {processor.min_quality_score})")
+                                accepted_trace = best_trace
+                                break
+                            else:
+                                print(f"    ❌ Quality check failed ({quality_score:.1f} < {processor.min_quality_score})")
+                                if attempt < max_attempts:
+                                    print(f"    🔄 Retrying...")
+                                continue
+                        else:
+                            accepted_trace = best_trace
+                            break
+                            
+                    except Exception as e:
+                        print(f"    ❌ Error in attempt {attempt}: {e}")
+                        if attempt < max_attempts:
+                            print(f"    🔄 Retrying...")
+                        continue
+                
+                if accepted_trace:
+                    accepted_trace['sample_index'] = len(all_traces)
+                    if processor.quality_check:
+                        accepted_trace['metadata']['quality_checked'] = True
+                        accepted_trace['metadata']['min_quality_threshold'] = processor.min_quality_score
+                    
+                    all_traces.append(accepted_trace)
+                    print(f"  ✅ Accepted trace")
+                    
+                    # Save incrementally
+                    if output_file and save_incrementally:
+                        processor._save_traces_incrementally(all_traces, output_file)
+                        print(f"  💾 Saved {len(all_traces)} traces to {output_file}")
+                else:
+                    print(f"  ❌ Failed to generate acceptable trace after {max_attempts} attempts")
+        
+        except Exception as e:
+            print(f"  ❌ Error processing sample {sample_title}: {e}")
+            continue
+        
+        # Check if we've reached the maximum number of samples
+        if max_samples and len(all_traces) >= max_samples:
+            print(f"Reached maximum of {max_samples} traces, stopping")
+            break
+    
+    return all_traces
+
 async def main():
     """Main function with command line argument support and MPI distribution"""
     # Configure logging based on MPI rank
@@ -1601,40 +1831,37 @@ async def main():
     if rank == 0:
         print(f"Synthetic Reasoning Trace Generator")
         print(f"Model: {args.model}")
-        print(f"Input file: {args.input_file}")
+        print(f"Input pattern: {args.input_pattern}")
         print(f"Max traces: {args.max_traces or 'All'}")
         if MPI_AVAILABLE:
             print(f"MPI processes: {size}")
         print("-" * 50)
     
-    # Load data from JSONL file (all processes load to determine distribution)
-    texts = load_data_from_jsonl(args.input_file, args.max_traces, apply_quality_filter=(rank == 0))
+    # Discover input files using pattern (supports wildcards)
+    all_files = discover_input_files(args.input_pattern)
     
-    if not texts:
+    if not all_files:
         if rank == 0:
-            print("No text data loaded. Exiting.")
+            print("No input files found. Exiting.")
         return
     
-    # Distribute texts across MPI processes
+    # Distribute files across MPI processes (each rank gets different files)
     if MPI_AVAILABLE and size > 1:
-        # Simple round-robin distribution - keep track of original indices
-        my_text_indices = [i for i in range(len(texts)) if i % size == rank]
-        my_texts = [texts[i] for i in my_text_indices]
-        start_index = my_text_indices[0] if my_text_indices else 0
-        logger.info(f"Assigned {len(my_texts)} texts to process (out of {len(texts)} total)")
+        my_files = distribute_files_across_ranks(all_files, rank, size)
         
         # Update output filename to include rank
         base_name, ext = args.output.rsplit('.', 1) if '.' in args.output else (args.output, 'json')
         my_output = f"{base_name}_rank{rank}.{ext}"
+        logger.info(f"Rank {rank} will process {len(my_files)} files")
     else:
-        my_texts = texts
-        start_index = 0
+        my_files = all_files
         my_output = args.output
         if rank == 0:
-            logger.info(f"Processing {len(my_texts)} texts in single process mode")
+            logger.info(f"Processing {len(my_files)} files in single process mode")
     
-    # Convert texts to ScientificPassage objects with correct indexing
-    papers = convert_texts_to_passages(my_texts, start_index)
+    if not my_files:
+        logger.info(f"Rank {rank} has no files to process")
+        return
     
     # Initialize components with specified model
     try:
@@ -1658,8 +1885,8 @@ async def main():
     # Determine resume behavior
     resume_enabled = not args.no_resume
     
-    # Generate traces with incremental saving
-    logger.info(f"Generating reasoning traces for {len(papers)} text samples...")
+    # Generate traces with incremental saving using streaming approach
+    logger.info(f"Processing files with streaming approach...")
     if rank == 0:
         print(f"Progress will be saved incrementally to: {my_output}")
         if resume_enabled:
@@ -1669,9 +1896,11 @@ async def main():
             print("(Starting fresh - ignoring any existing output file)")
         print("-" * 50)
     
-    traces = await processor.process_paper_corpus(
-        papers, 
-        traces_per_paper=args.traces_per_sample,
+    traces = await process_files_streaming(
+        processor=processor,
+        file_paths=my_files,
+        max_samples=args.max_traces,
+        traces_per_sample=args.traces_per_sample,
         traces_per_question=args.traces_per_question,
         output_file=my_output if resume_enabled else None,
         save_incrementally=resume_enabled
