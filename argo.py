@@ -23,7 +23,10 @@ ARGO_MODELS = {
     'gpt4large': 'GPT-4 Large via Argo',
     'gpt4turbo': 'GPT-4 Turbo via Argo',
     'gpto1preview': 'GPT-o1 Preview via Argo',
-    'gemini25pro': 'Gemini 2.5 Pro via Argo'
+    'gemini25pro': 'Gemini 2.5 Pro via Argo',
+    'gpt5': "openAI GPT-5",
+    'gpt5mini': "OpenAI GPT-5 mini",
+    'gpt5nano': "OpenAI GPT-5 nano"
 }
 
 

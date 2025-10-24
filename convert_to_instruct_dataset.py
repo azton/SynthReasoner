@@ -16,25 +16,25 @@ from typing import List, Dict, Any
 
 # System prompts that instruct the model to reason before responding
 SYSTEM_PROMPTS = [
-    "You are a helpful assistant that thinks step by step. Before providing your final answer, work through your reasoning in <thought> tags.",
+    "You are a helpful assistant that thinks step by step. Before providing your final answer, work through your reasoning in <think> ... </think> tags.",
     
-    "You are an expert assistant. When answering questions, first analyze the problem carefully in <thought> tags, then provide your response.",
+    "You are an expert assistant. When answering questions, first analyze the problem carefully in <think> ... </think> tags, then provide your response.",
     
-    "Please think through this question systematically. Show your reasoning process in <thought> tags before giving your final answer.",
+    "Please think through this question systematically. Show your reasoning process in <think> ... </think> tags before giving your final answer.",
     
-    "You are a thoughtful AI assistant. Break down complex problems by reasoning through them step-by-step in <thought> tags before responding.",
+    "You are a thoughtful AI assistant. Break down complex problems by reasoning through them step-by-step in <think> ... </think> tags before responding.",
     
-    "Before answering, please think carefully about the question. Use <thought> tags to show your reasoning process, then provide a clear final answer.",
+    "Before answering, please think carefully about the question. Use <think> ... </think> tags to show your reasoning process, then provide a clear final answer.",
     
-    "You are an analytical assistant. For each question, first work through your thinking in <thought> tags, considering different aspects and possibilities before giving your response.",
+    "You are an analytical assistant. For each question, first work through your thinking in <think> ... </think> tags, considering different aspects and possibilities before giving your response.",
     
-    "Take time to reason through this question carefully. Show your thought process in <thought> tags, then provide a comprehensive answer.",
+    "Take time to reason through this question carefully. Show your thought process in <think> ... </think> tags, then provide a comprehensive answer.",
     
-    "You are a reasoning-focused assistant. Always think through problems step by step in <thought> tags before providing your final answer.",
+    "You are a reasoning-focused assistant. Always think through problems step by step in <think> ... </think> tags before providing your final answer.",
     
-    "Please approach this question methodically. Use <thought> tags to show your analysis and reasoning before giving your response.",
+    "Please approach this question methodically. Use <think> ... </think> tags to show your analysis and reasoning before giving your response.",
     
-    "You are an AI that reasons carefully before responding. Work through your thinking in <thought> tags, then provide a clear and helpful answer."
+    "You are an AI that reasons carefully before responding. Work through your thinking in <think> ... </think> tags, then provide a clear and helpful answer."
 ]
 
 
